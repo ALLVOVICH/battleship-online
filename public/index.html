@@ -2,201 +2,101 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<title>Морской бой онлайн</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-
+<title>Морской бой</title>
+<script src="/socket.io/socket.io.js"></script>
 <style>
-body{
-  margin:0;
-  font-family:-apple-system,BlinkMacSystemFont;
-  background:#f5f5f7;
-}
-.app{
-  max-width:1100px;
-  margin:30px auto;
-  background:white;
-  border-radius:24px;
-  padding:24px;
-  box-shadow:0 20px 50px rgba(0,0,0,.15);
-}
-.game{
-  display:flex;
-  gap:40px;
-}
-.board{
-  display:grid;
-  grid-template-columns:repeat(10,38px);
-  gap:5px;
-}
-.cell{
-  width:38px;
-  height:38px;
-  border-radius:8px;
-  background:#e5e7eb;
-  cursor:pointer;
-}
-.cell.ship{background:#0ea5e9;}
-.cell.hit{background:#ef4444;}
-.cell.miss{background:#94a3b8;}
-.panel{
-  font-size:14px;
-}
-button{
-  margin-top:10px;
-  padding:8px 14px;
-  border:none;
-  border-radius:10px;
-  background:#111827;
-  color:white;
-  cursor:pointer;
-}
+body { font-family: sans-serif; background:#0b132b; color:white; text-align:center }
+.grid { display:grid; grid-template-columns:repeat(10,30px); gap:2px; margin:10px auto }
+.cell { width:30px; height:30px; background:#1c2541; cursor:pointer }
+.hit { background:red }
+.miss { background:#3a86ff }
 </style>
 </head>
-
 <body>
-<div class="app">
-<h1>⚓ Морской бой</h1>
-<p id="status">Ожидание второго игрока…</p>
 
-<div class="game">
-  <div>
-    <h3>Твое поле</h3>
-    <div class="board" id="my"></div>
-    <button onclick="randomize()">🎲 Случайная расстановка</button>
-  </div>
+<h2 id="status">Создай или войди в комнату</h2>
 
-  <div>
-    <h3>Поле соперника</h3>
-    <div class="board" id="enemy"></div>
-  </div>
+<button onclick="create()">Создать</button>
+<input id="code" placeholder="Код">
+<button onclick="join()">Войти</button>
 
-  <div class="panel">
-    <b>Игрок:</b> <span id="player">—</span><br>
-    <b>Ход:</b> <span id="turn">—</span>
-  </div>
-</div>
-</div>
+<h3 id="room"></h3>
 
-<script src="/socket.io/socket.io.js"></script>
+<div id="enemy" class="grid"></div>
+
+<button onclick="randomShips()">Случайная расстановка</button>
+<button onclick="rematch()">Реванш</button>
+
 <script>
 const socket = io();
-let player = 0;
-let myTurn = false;
-let ready = false;
+let roomCode = "";
+let myShips = [];
 
-const myBoard = Array.from({length:10},()=>Array(10).fill(0));
-const enemyBoard = Array.from({length:10},()=>Array(10).fill(0));
-
-const SHIPS = [4,3,3,2,2,2,1,1,1,1];
-
-const myEl = document.getElementById("my");
-const enemyEl = document.getElementById("enemy");
-
-function draw(board, el, showShips=false, clickable=false){
-  el.innerHTML="";
-  for(let y=0;y<10;y++){
-    for(let x=0;x<10;x++){
-      const c=document.createElement("div");
-      c.className="cell";
-      if(board[y][x]===1 && showShips) c.classList.add("ship");
-      if(board[y][x]===2) c.classList.add("hit");
-      if(board[y][x]===3) c.classList.add("miss");
-      if(clickable) c.onclick=()=>shoot(x,y);
-      el.appendChild(c);
-    }
-  }
+function create() {
+  socket.emit("createRoom");
 }
 
-function canPlace(x,y,len,dir){
-  for(let i=0;i<len;i++){
-    const nx=x+(dir==='h'?i:0);
-    const ny=y+(dir==='v'?i:0);
-    if(nx<0||ny<0||nx>=10||ny>=10) return false;
-    for(let dx=-1;dx<=1;dx++)
-      for(let dy=-1;dy<=1;dy++){
-        const cx=nx+dx, cy=ny+dy;
-        if(cx>=0&&cy>=0&&cx<10&&cy<10)
-          if(myBoard[cy][cx]===1) return false;
-      }
-  }
-  return true;
+function join() {
+  roomCode = code.value;
+  socket.emit("joinRoom", roomCode);
 }
 
-function placeShip(x,y,len,dir){
-  for(let i=0;i<len;i++){
-    const nx=x+(dir==='h'?i:0);
-    const ny=y+(dir==='v'?i:0);
-    myBoard[ny][nx]=1;
-  }
-}
-
-function randomize(){
-  for(let y=0;y<10;y++) myBoard[y].fill(0);
-  for(const len of SHIPS){
-    let placed=false;
-    while(!placed){
-      const dir=Math.random()<0.5?'h':'v';
-      const x=Math.floor(Math.random()*10);
-      const y=Math.floor(Math.random()*10);
-      if(canPlace(x,y,len,dir)){
-        placeShip(x,y,len,dir);
-        placed=true;
-      }
-    }
-  }
-  ready=true;
-  socket.emit("ready");
-  draw(myBoard,myEl,true);
-}
-
-function shoot(x,y){
-  if(!myTurn || enemyBoard[y][x]!==0) return;
-  socket.emit("move",{x,y});
-}
-
-socket.on("player", n=>{
-  player=n;
-  document.getElementById("player").textContent=n;
-  myTurn = n===1;
-  updateTurn();
+socket.on("roomCode", c => {
+  roomCode = c;
+  room.innerText = "Код комнаты: " + c;
 });
 
-socket.on("start",()=>{
-  document.getElementById("status").textContent="Бой начался";
+socket.on("startPlacement", () => {
+  status.innerText = "Расставь корабли";
 });
 
-socket.on("move",({x,y,hit})=>{
-  if(hit){
-    enemyBoard[y][x]=2;
-    if(myTurn) myTurn=true;
-  }else{
-    enemyBoard[y][x]=3;
-    myTurn=true;
+function randomShips() {
+  myShips = [];
+  while (myShips.length < 20) {
+    const c = Math.floor(Math.random()*100);
+    if (!myShips.includes(c)) myShips.push(c);
   }
-  updateTurn();
-  draw(enemyBoard,enemyEl,false,myTurn);
-});
-
-socket.on("enemyMove",({x,y})=>{
-  if(myBoard[y][x]===1){
-    myBoard[y][x]=2;
-    socket.emit("result",{hit:true});
-  }else{
-    myBoard[y][x]=3;
-    socket.emit("result",{hit:false});
-    myTurn=true;
-  }
-  updateTurn();
-  draw(myBoard,myEl,true);
-});
-
-function updateTurn(){
-  document.getElementById("turn").textContent =
-    myTurn ? "Ваш" : "Соперника";
+  socket.emit("setBoard", {
+    code: roomCode,
+    ships: myShips.map(c => `${Math.floor(c/10)},${c%10}`)
+  });
 }
 
-draw(myBoard,myEl,true);
-draw(enemyBoard,enemyEl,false,true);
+function drawEnemy() {
+  enemy.innerHTML = "";
+  for (let i=0;i<100;i++){
+    const d = document.createElement("div");
+    d.className="cell";
+    d.onclick=()=>shot(i);
+    d.id="e"+i;
+    enemy.appendChild(d);
+  }
+}
+
+function shot(i){
+  socket.emit("shot", { code: roomCode, cell:`${Math.floor(i/10)},${i%10}` });
+}
+
+socket.on("yourTurn", ()=>{
+  status.innerText="Твой ход";
+  drawEnemy();
+});
+
+socket.on("shotResult", ({cell, hit})=>{
+  const [x,y]=cell.split(",");
+  const i=x*10+ +y;
+  document.getElementById("e"+i).classList.add(hit?"hit":"miss");
+});
+
+socket.on("enemyShot", ()=>status.innerText="Ход противника");
+
+socket.on("win", ()=>alert("ПОБЕДА"));
+socket.on("lose", ()=>alert("ПОРАЖЕНИЕ"));
+socket.on("restart", ()=>location.reload());
+
+function rematch(){
+  socket.emit("rematch", roomCode);
+}
 </script>
 </body>
 </html>
