@@ -21,8 +21,8 @@ io.on("connection", socket => {
     rooms[code] = {
       players: [socket.id],
       boards: {},
-      turn: null,
-      ready: {}
+      turnIndex: 0,
+      rematch: {}
     };
     socket.join(code);
     socket.emit("roomCode", code);
@@ -31,7 +31,6 @@ io.on("connection", socket => {
   socket.on("joinRoom", code => {
     const room = rooms[code];
     if (!room || room.players.length >= 2) return;
-
     room.players.push(socket.id);
     socket.join(code);
     io.to(code).emit("startPlacement");
@@ -39,55 +38,67 @@ io.on("connection", socket => {
 
   socket.on("setBoard", ({ code, ships }) => {
     const room = rooms[code];
-    room.boards[socket.id] = {
-      ships: new Set(ships),
-      hits: new Set(),
-      alive: ships.length
-    };
+    room.boards[socket.id] = ships.map(cells => ({
+      cells,
+      hits: []
+    }));
 
     if (Object.keys(room.boards).length === 2) {
-      room.turn = room.players[0];
-      io.to(room.turn).emit("yourTurn");
+      const first = room.players[room.turnIndex % 2];
+      io.to(first).emit("yourTurn");
+      io.to(code).emit("gameStarted");
     }
   });
 
   socket.on("shot", ({ code, cell }) => {
     const room = rooms[code];
-    if (room.turn !== socket.id) return;
+    const current = room.players[room.turnIndex % 2];
+    if (socket.id !== current) return;
 
     const enemy = room.players.find(p => p !== socket.id);
-    const board = room.boards[enemy];
+    const fleet = room.boards[enemy];
 
     let hit = false;
+    let destroyedShip = null;
 
-    if (board.ships.has(cell) && !board.hits.has(cell)) {
-      hit = true;
-      board.hits.add(cell);
-      board.alive--;
+    for (const ship of fleet) {
+      if (ship.cells.includes(cell) && !ship.hits.includes(cell)) {
+        ship.hits.push(cell);
+        hit = true;
+        if (ship.hits.length === ship.cells.length) {
+          destroyedShip = ship.cells;
+        }
+        break;
+      }
     }
 
-    socket.emit("shotResult", { cell, hit });
+    socket.emit("shotResult", { cell, hit, destroyedShip });
     socket.to(code).emit("enemyShot", { cell, hit });
 
-    if (board.alive === 0) {
-      io.to(socket.id).emit("win");
+    const allDestroyed = fleet.every(s => s.hits.length === s.cells.length);
+    if (allDestroyed) {
+      socket.emit("win");
       io.to(enemy).emit("lose");
       return;
     }
 
-    if (!hit) room.turn = enemy;
-    io.to(room.turn).emit("yourTurn");
+    if (!hit) {
+      room.turnIndex++;
+      const next = room.players[room.turnIndex % 2];
+      io.to(next).emit("yourTurn");
+      io.to(code).emit("enemyTurn", next);
+    }
   });
 
   socket.on("rematch", code => {
     const room = rooms[code];
-    room.ready[socket.id] = true;
+    room.rematch[socket.id] = true;
 
-    if (Object.keys(room.ready).length === 2) {
+    if (Object.keys(room.rematch).length === 2) {
       room.boards = {};
-      room.ready = {};
-      room.turn = room.players[0];
-      io.to(code).emit("restart");
+      room.rematch = {};
+      room.turnIndex++;
+      io.to(code).emit("startPlacement");
     }
   });
 });
