@@ -4,14 +4,49 @@
 <meta charset="UTF-8">
 <title>Морской бой</title>
 <script src="/socket.io/socket.io.js"></script>
+
 <style>
-body { font-family: sans-serif; background:#0b132b; color:white; text-align:center }
-.grid { display:grid; grid-template-columns:repeat(10,30px); gap:2px; margin:10px auto }
-.cell { width:30px; height:30px; background:#1c2541; cursor:pointer }
-.hit { background:red }
+body {
+  margin:0;
+  font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;
+  background:#0b132b;
+  color:white;
+  text-align:center;
+}
+
+.grid {
+  display:grid;
+  grid-template-columns:repeat(10,32px);
+  gap:4px;
+  margin:10px auto;
+}
+
+.cell {
+  width:32px;
+  height:32px;
+  background:#1c2541;
+  border-radius:6px;
+}
+
+.enemy .cell { cursor:pointer }
+.disabled { pointer-events:none; opacity:0.4 }
+
+.own { background:#2ec4b6 }
+.hit { background:#e63946 }
 .miss { background:#3a86ff }
+.destroyed { outline:3px solid #ffd166; background:#6d1b1b }
+
+button {
+  padding:10px 14px;
+  border-radius:10px;
+  border:none;
+  background:#3a86ff;
+  color:white;
+  margin:6px;
+}
 </style>
 </head>
+
 <body>
 
 <h2 id="status">Создай или войди в комнату</h2>
@@ -22,81 +57,148 @@ body { font-family: sans-serif; background:#0b132b; color:white; text-align:cent
 
 <h3 id="room"></h3>
 
-<div id="enemy" class="grid"></div>
+<div>
+  <strong>Твоё поле</strong>
+  <div id="own" class="grid"></div>
+  <button onclick="randomShips()">Случайная расстановка</button>
+</div>
 
-<button onclick="randomShips()">Случайная расстановка</button>
-<button onclick="rematch()">Реванш</button>
+<div>
+  <strong>Поле противника</strong>
+  <div id="enemy" class="grid enemy disabled"></div>
+</div>
+
+<button onclick="requestRematch()">Реванш</button>
 
 <script>
 const socket = io();
 let roomCode = "";
+let myTurn = false;
 let myShips = [];
 
-function create() {
-  socket.emit("createRoom");
-}
+const SHIPS = [4,3,3,2,2,2,1,1,1,1];
 
-function join() {
-  roomCode = code.value;
-  socket.emit("joinRoom", roomCode);
-}
+function create(){ socket.emit("createRoom") }
+function join(){ roomCode = code.value; socket.emit("joinRoom", roomCode) }
 
-socket.on("roomCode", c => {
-  roomCode = c;
-  room.innerText = "Код комнаты: " + c;
+socket.on("roomCode", c=>{
+  roomCode=c;
+  room.innerText="Код комнаты: "+c;
 });
 
-socket.on("startPlacement", () => {
-  status.innerText = "Расставь корабли";
+socket.on("startPlacement", ()=>{
+  status.innerText="Расставь корабли";
+  clearBoards();
 });
 
-function randomShips() {
-  myShips = [];
-  while (myShips.length < 20) {
-    const c = Math.floor(Math.random()*100);
-    if (!myShips.includes(c)) myShips.push(c);
+function clearBoards(){
+  own.innerHTML="";
+  enemy.innerHTML="";
+}
+
+function randomShips(){
+  const board = Array.from({length:10},()=>Array(10).fill(0));
+  const ships = [];
+
+  for (const size of SHIPS) {
+    let placed = false;
+    while (!placed) {
+      const dir = Math.random()<0.5 ? "h":"v";
+      const x = Math.floor(Math.random()*10);
+      const y = Math.floor(Math.random()*10);
+
+      const cells = [];
+      for (let i=0;i<size;i++){
+        const nx = dir==="h"?x:x+i;
+        const ny = dir==="h"?y+i:y;
+        if (nx>9||ny>9) break;
+        cells.push([nx,ny]);
+      }
+      if (cells.length!==size) continue;
+
+      if (cells.some(([i,j])=>hasNeighbor(board,i,j))) continue;
+
+      cells.forEach(([i,j])=>board[i][j]=1);
+      ships.push(cells.map(c=>c.join(",")));
+      placed = true;
+    }
   }
-  socket.emit("setBoard", {
-    code: roomCode,
-    ships: myShips.map(c => `${Math.floor(c/10)},${c%10}`)
-  });
+
+  myShips = ships.flat();
+  drawOwn(myShips);
+  socket.emit("setBoard",{code:roomCode,ships});
 }
 
-function drawEnemy() {
-  enemy.innerHTML = "";
-  for (let i=0;i<100;i++){
-    const d = document.createElement("div");
+function hasNeighbor(board,x,y){
+  for(let i=x-1;i<=x+1;i++)
+    for(let j=y-1;j<=y+1;j++)
+      if(board[i]?.[j]) return true;
+  return false;
+}
+
+function drawOwn(cells){
+  own.innerHTML="";
+  for(let i=0;i<100;i++){
+    const d=document.createElement("div");
     d.className="cell";
-    d.onclick=()=>shot(i);
+    if(cells.includes(`${Math.floor(i/10)},${i%10}`)) d.classList.add("own");
+    own.appendChild(d);
+  }
+}
+
+function drawEnemy(){
+  enemy.innerHTML="";
+  for(let i=0;i<100;i++){
+    const d=document.createElement("div");
+    d.className="cell";
+    d.onclick=()=> myTurn && shot(i);
     d.id="e"+i;
     enemy.appendChild(d);
   }
 }
 
 function shot(i){
-  socket.emit("shot", { code: roomCode, cell:`${Math.floor(i/10)},${i%10}` });
+  socket.emit("shot",{code:roomCode,cell:`${Math.floor(i/10)},${i%10}`});
 }
 
-socket.on("yourTurn", ()=>{
+socket.on("yourTurn",()=>{
+  myTurn=true;
+  enemy.classList.remove("disabled");
   status.innerText="Твой ход";
   drawEnemy();
 });
 
-socket.on("shotResult", ({cell, hit})=>{
-  const [x,y]=cell.split(",");
-  const i=x*10+ +y;
-  document.getElementById("e"+i).classList.add(hit?"hit":"miss");
+socket.on("enemyTurn",()=>{
+  myTurn=false;
+  enemy.classList.add("disabled");
+  status.innerText="Ход противника";
 });
 
-socket.on("enemyShot", ()=>status.innerText="Ход противника");
+socket.on("shotResult",({cell,hit,destroyedShip})=>{
+  const [x,y]=cell.split(",");
+  const i=x*10+ +y;
+  const c=document.getElementById("e"+i);
+  c.classList.add(hit?"hit":"miss");
 
-socket.on("win", ()=>alert("ПОБЕДА"));
-socket.on("lose", ()=>alert("ПОРАЖЕНИЕ"));
-socket.on("restart", ()=>location.reload());
+  if (destroyedShip)
+    destroyedShip.forEach(p=>{
+      const [a,b]=p.split(",");
+      document.getElementById("e"+(a*10+ +b)).classList.add("destroyed");
+    });
+});
 
-function rematch(){
-  socket.emit("rematch", roomCode);
+socket.on("enemyShot",({cell,hit})=>{
+  const [x,y]=cell.split(",");
+  own.children[x*10+ +y].classList.add(hit?"hit":"miss");
+});
+
+socket.on("win",()=>status.innerText="ПОБЕДА");
+socket.on("lose",()=>status.innerText="ПОРАЖЕНИЕ");
+
+function requestRematch(){
+  socket.emit("rematch",roomCode);
 }
 </script>
+
 </body>
 </html>
