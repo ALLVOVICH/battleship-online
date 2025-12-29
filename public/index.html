@@ -2,98 +2,121 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Морской бой</title>
 <script src="/socket.io/socket.io.js"></script>
 
 <style>
 body {
   margin:0;
-  font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;
   background:#0b132b;
   color:white;
+  font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;
+  display:flex;
+  justify-content:center;
+}
+
+.app {
+  width:100%;
+  max-width:420px;
+  padding:12px;
   text-align:center;
 }
 
+h2 { margin:10px 0 }
+
 .grid {
   display:grid;
-  grid-template-columns:repeat(10,32px);
+  grid-template-columns:repeat(10, 1fr);
   gap:4px;
-  margin:10px auto;
+  margin:10px 0;
 }
 
 .cell {
-  width:32px;
-  height:32px;
+  aspect-ratio:1;
   background:#1c2541;
   border-radius:6px;
 }
 
-.enemy .cell { cursor:pointer }
-.disabled { pointer-events:none; opacity:0.4 }
-
 .own { background:#2ec4b6 }
 .hit { background:#e63946 }
 .miss { background:#3a86ff }
-.destroyed { outline:3px solid #ffd166; background:#6d1b1b }
+.destroyed {
+  background:#6d1b1b;
+  outline:2px solid #ffd166;
+}
+
+.enemy.disabled {
+  pointer-events:none;
+  opacity:0.4;
+}
+
+.enemy .cell {
+  cursor:pointer;
+}
 
 button {
-  padding:10px 14px;
-  border-radius:10px;
+  width:100%;
+  padding:12px;
+  margin:6px 0;
   border:none;
+  border-radius:12px;
   background:#3a86ff;
   color:white;
-  margin:6px;
+  font-size:16px;
 }
 </style>
 </head>
 
 <body>
 
+<div class="app">
+
 <h2 id="status">Создай или войди в комнату</h2>
 
-<button onclick="create()">Создать</button>
-<input id="code" placeholder="Код">
+<button onclick="create()">Создать комнату</button>
+
+<input id="code" placeholder="Код комнаты" style="width:100%;padding:10px;border-radius:10px;border:none">
 <button onclick="join()">Войти</button>
 
-<h3 id="room"></h3>
+<div id="room"></div>
 
-<div>
-  <strong>Твоё поле</strong>
-  <div id="own" class="grid"></div>
-  <button onclick="randomShips()">Случайная расстановка</button>
-</div>
+<h3>Твоё поле</h3>
+<div id="own" class="grid"></div>
+<button onclick="randomShips()">Случайная расстановка</button>
 
-<div>
-  <strong>Поле противника</strong>
-  <div id="enemy" class="grid enemy disabled"></div>
-</div>
+<h3>Поле противника</h3>
+<div id="enemy" class="grid enemy disabled"></div>
 
 <button onclick="requestRematch()">Реванш</button>
+
+</div>
 
 <script>
 const socket = io();
 let roomCode = "";
 let myTurn = false;
-let myShips = [];
+let enemyDrawn = false;
 
 const SHIPS = [4,3,3,2,2,2,1,1,1,1];
 
-function create(){ socket.emit("createRoom") }
-function join(){ roomCode = code.value; socket.emit("joinRoom", roomCode) }
+function create(){ socket.emit("createRoom"); }
+function join(){ roomCode = code.value.trim(); socket.emit("joinRoom", roomCode); }
 
 socket.on("roomCode", c=>{
-  roomCode=c;
-  room.innerText="Код комнаты: "+c;
+  roomCode = c;
+  room.innerText = "Код комнаты: " + c;
 });
 
 socket.on("startPlacement", ()=>{
-  status.innerText="Расставь корабли";
+  status.innerText = "Расставь корабли";
   clearBoards();
 });
 
 function clearBoards(){
   own.innerHTML="";
   enemy.innerHTML="";
+  enemyDrawn = false;
 }
 
 function randomShips(){
@@ -101,31 +124,29 @@ function randomShips(){
   const ships = [];
 
   for (const size of SHIPS) {
-    let placed = false;
-    while (!placed) {
-      const dir = Math.random()<0.5 ? "h":"v";
+    let placed=false;
+    while(!placed){
+      const dir = Math.random()<0.5;
       const x = Math.floor(Math.random()*10);
       const y = Math.floor(Math.random()*10);
+      const cells=[];
 
-      const cells = [];
-      for (let i=0;i<size;i++){
-        const nx = dir==="h"?x:x+i;
-        const ny = dir==="h"?y+i:y;
-        if (nx>9||ny>9) break;
+      for(let i=0;i<size;i++){
+        const nx = dir?x:x+i;
+        const ny = dir?y+i:y;
+        if(nx>9||ny>9) break;
         cells.push([nx,ny]);
       }
-      if (cells.length!==size) continue;
-
-      if (cells.some(([i,j])=>hasNeighbor(board,i,j))) continue;
+      if(cells.length!==size) continue;
+      if(cells.some(([i,j])=>hasNeighbor(board,i,j))) continue;
 
       cells.forEach(([i,j])=>board[i][j]=1);
       ships.push(cells.map(c=>c.join(",")));
-      placed = true;
+      placed=true;
     }
   }
 
-  myShips = ships.flat();
-  drawOwn(myShips);
+  drawOwn(ships.flat());
   socket.emit("setBoard",{code:roomCode,ships});
 }
 
@@ -141,18 +162,21 @@ function drawOwn(cells){
   for(let i=0;i<100;i++){
     const d=document.createElement("div");
     d.className="cell";
-    if(cells.includes(`${Math.floor(i/10)},${i%10}`)) d.classList.add("own");
+    if(cells.includes(`${Math.floor(i/10)},${i%10}`))
+      d.classList.add("own");
     own.appendChild(d);
   }
 }
 
 function drawEnemy(){
+  if(enemyDrawn) return;
+  enemyDrawn = true;
   enemy.innerHTML="";
   for(let i=0;i<100;i++){
     const d=document.createElement("div");
     d.className="cell";
-    d.onclick=()=> myTurn && shot(i);
     d.id="e"+i;
+    d.onclick=()=>shot(i);
     enemy.appendChild(d);
   }
 }
@@ -180,7 +204,7 @@ socket.on("shotResult",({cell,hit,destroyedShip})=>{
   const c=document.getElementById("e"+i);
   c.classList.add(hit?"hit":"miss");
 
-  if (destroyedShip)
+  if(destroyedShip)
     destroyedShip.forEach(p=>{
       const [a,b]=p.split(",");
       document.getElementById("e"+(a*10+ +b)).classList.add("destroyed");
