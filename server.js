@@ -1,106 +1,129 @@
-const express = require("express");
-const http = require("http");
-const { Server } = require("socket.io");
+const express = require("express")
+const http = require("http")
+const { Server } = require("socket.io")
 
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server);
+const app = express()
+const server = http.createServer(app)
+const io = new Server(server)
 
-app.use(express.static("public"));
+app.use(express.static("public"))
 
-const rooms = {};
+app.get("/", (req, res) => {
+  res.sendFile(__dirname + "/public/index.html")
+})
 
-function genCode() {
-  return Math.random().toString(36).substring(2, 6).toUpperCase();
-}
+const rooms = {}
 
 io.on("connection", socket => {
+  console.log("Connected:", socket.id)
 
-  socket.on("createRoom", () => {
-    const code = genCode();
-    rooms[code] = {
-      players: [socket.id],
-      boards: {},
-      turnIndex: 0,
-      rematch: {}
-    };
-    socket.join(code);
-    socket.emit("roomCode", code);
-  });
-
-  socket.on("joinRoom", code => {
-    const room = rooms[code];
-    if (!room || room.players.length >= 2) return;
-    room.players.push(socket.id);
-    socket.join(code);
-    io.to(code).emit("startPlacement");
-  });
-
-  socket.on("setBoard", ({ code, ships }) => {
-    const room = rooms[code];
-    room.boards[socket.id] = ships.map(cells => ({
-      cells,
-      hits: []
-    }));
-
-    if (Object.keys(room.boards).length === 2) {
-      const first = room.players[room.turnIndex % 2];
-      io.to(first).emit("yourTurn");
-      io.to(code).emit("gameStarted");
-    }
-  });
-
-  socket.on("shot", ({ code, cell }) => {
-    const room = rooms[code];
-    const current = room.players[room.turnIndex % 2];
-    if (socket.id !== current) return;
-
-    const enemy = room.players.find(p => p !== socket.id);
-    const fleet = room.boards[enemy];
-
-    let hit = false;
-    let destroyedShip = null;
-
-    for (const ship of fleet) {
-      if (ship.cells.includes(cell) && !ship.hits.includes(cell)) {
-        ship.hits.push(cell);
-        hit = true;
-        if (ship.hits.length === ship.cells.length) {
-          destroyedShip = ship.cells;
-        }
-        break;
+  socket.on("join-room", roomCode => {
+    if (!rooms[roomCode]) {
+      rooms[roomCode] = {
+        players: [],
+        turn: 0,
+        boards: {},
+        ready: {}
       }
     }
 
-    socket.emit("shotResult", { cell, hit, destroyedShip });
-    socket.to(code).emit("enemyShot", { cell, hit });
+    const room = rooms[roomCode]
+    if (room.players.length >= 2) return
 
-    const allDestroyed = fleet.every(s => s.hits.length === s.cells.length);
-    if (allDestroyed) {
-      socket.emit("win");
-      io.to(enemy).emit("lose");
-      return;
+    room.players.push(socket.id)
+    socket.join(roomCode)
+
+    console.log(`Player joined room ${roomCode}`)
+
+    socket.emit("joined", room.players.length)
+
+    if (room.players.length === 2) {
+      room.players.forEach((id, i) => {
+        io.to(id).emit("start-game", {
+          yourTurn: i === 0
+        })
+      })
     }
+  })
+
+  socket.on("place-ships", ({ roomCode, board }) => {
+    rooms[roomCode].boards[socket.id] = board
+    rooms[roomCode].ready[socket.id] = true
+
+    const room = rooms[roomCode]
+    if (Object.keys(room.ready).length === 2) {
+      room.players.forEach(id => {
+        io.to(id).emit("both-ready")
+      })
+    }
+  })
+
+  socket.on("shoot", ({ roomCode, x, y }) => {
+    const room = rooms[roomCode]
+    const playerIndex = room.players.indexOf(socket.id)
+
+    if (playerIndex !== room.turn) return
+
+    const enemyId = room.players[1 - playerIndex]
+    const enemyBoard = room.boards[enemyId]
+    const cell = enemyBoard[y][x]
+
+    if (cell.hit) return
+
+    cell.hit = true
+
+    const hit = cell.ship
+    const sunk = hit && checkSunk(enemyBoard, cell.shipId)
+
+    io.to(socket.id).emit("shot-result", { x, y, hit, sunk })
+    io.to(enemyId).emit("enemy-shot", { x, y, hit, sunk })
 
     if (!hit) {
-      room.turnIndex++;
-      const next = room.players[room.turnIndex % 2];
-      io.to(next).emit("yourTurn");
-      io.to(code).emit("enemyTurn", next);
+      room.turn = 1 - room.turn
     }
-  });
 
-  socket.on("rematch", code => {
-    const room = rooms[code];
-    room.rematch[socket.id] = true;
-
-    if (Object.keys(room.rematch).length === 2) {
-      room.boards = {};
-      room.rematch = {};
-      room.turnIndex++;
-      io.to(code).emit("startPlacement");
+    if (checkWin(enemyBoard)) {
+      io.to(socket.id).emit("victory")
+      io.to(enemyId).emit("defeat")
     }
-  });
-});
+  })
 
-server.listen(process.env.PORT || 3000);
+  socket.on("rematch", roomCode => {
+    const room = rooms[roomCode]
+    room.turn = 0
+    room.boards = {}
+    room.ready = {}
+
+    room.players.forEach((id, i) => {
+      io.to(id).emit("rematch-start", { yourTurn: i === 0 })
+    })
+  })
+
+  socket.on("disconnect", () => {
+    for (const code in rooms) {
+      rooms[code].players = rooms[code].players.filter(id => id !== socket.id)
+      if (rooms[code].players.length === 0) delete rooms[code]
+    }
+  })
+})
+
+function checkSunk(board, shipId) {
+  for (let row of board) {
+    for (let cell of row) {
+      if (cell.shipId === shipId && !cell.hit) return false
+    }
+  }
+  return true
+}
+
+function checkWin(board) {
+  for (let row of board) {
+    for (let cell of row) {
+      if (cell.ship && !cell.hit) return false
+    }
+  }
+  return true
+}
+
+const PORT = process.env.PORT || 3000
+server.listen(PORT, () => console.log("Server running on", PORT))
