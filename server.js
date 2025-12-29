@@ -6,25 +6,43 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-let players = [];
-
-io.on("connection", socket => {
-  players.push(socket.id);
-
-  socket.emit("player", players.length);
-
-  socket.on("move", data => {
-    socket.broadcast.emit("move", data);
-  });
-
-  socket.on("disconnect", () => {
-    players = players.filter(p => p !== socket.id);
-  });
-});
-
 app.use(express.static("public"));
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log("Server running on", PORT);
-});
+const rooms = {}; 
+// rooms[code] = { players: [socketId], ships: {id: count}, turn: socketId }
+
+io.on("connection", socket => {
+
+  socket.on("join", code => {
+    if (!rooms[code]) {
+      rooms[code] = { players: [], ships: {}, turn: null };
+    }
+
+    const room = rooms[code];
+    if (room.players.length >= 2) {
+      socket.emit("full");
+      return;
+    }
+
+    room.players.push(socket.id);
+    room.ships[socket.id] = 20; // всего палуб
+    socket.join(code);
+
+    socket.emit("player", room.players.length);
+
+    if (room.players.length === 2) {
+      room.turn = room.players[0];
+      io.to(code).emit("start", room.turn);
+    }
+  });
+
+  socket.on("move", ({ code, x, y }) => {
+    const room = rooms[code];
+    if (!room || room.turn !== socket.id) return;
+
+    socket.to(code).emit("enemyMove", { x, y });
+  });
+
+  socket.on("result", ({ code, hit }) => {
+    const room = rooms[code];
+    const enemy = room.play
